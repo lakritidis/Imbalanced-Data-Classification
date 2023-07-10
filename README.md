@@ -1,3 +1,3 @@
 # Learning from Imbalanced Data
 
-Coming soon...
+A tutorial in learning from imbalanced data.
