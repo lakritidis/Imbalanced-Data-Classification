@@ -5,7 +5,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch import nn, optim
 from torch.autograd import Variable
-from sklearn.neighbors import KDTree, NearestNeighbors
+from sklearn.neighbors import NearestNeighbors, KDTree
+
+import warnings
+warnings.filterwarnings("ignore")
 
 
 class CustomLoss(nn.Module):
@@ -21,7 +24,9 @@ class CustomLoss(nn.Module):
 
 
 class VAE(nn.Module):
-    def __init__(self, dimensionality=2, sampling_strategy=1.0, latent_dimensionality=3, architecture=None):
+    def __init__(self, torch_state, dimensionality=2, sampling_strategy=1.0, latent_dimensionality=3, architecture=None):
+        torch.random.set_rng_state(torch_state)
+
         super(VAE, self).__init__()
 
         self.dimensionality_ = dimensionality
@@ -66,6 +71,7 @@ class VAE(nn.Module):
         self.lin_bn6 = nn.BatchNorm1d(num_features=dimensionality)
 
         self.relu = nn.ReLU()
+        self.state_ = torch_state
 
     # Encode method
     def encode(self, x):
@@ -119,6 +125,9 @@ class VAE(nn.Module):
         majority_class = np.array(samples_per_class).argmax()
         train_majority_samples = np.array([x[k] for k in range(x.shape[0]) if y[k] == majority_class])
 
+        x_over_train = np.copy(x)
+        y_over_train = np.copy(y)
+
         # Train the VAE on the samples of each minority class and synthesize class data
         for cls in range(num_classes):
             if cls != majority_class:
@@ -152,8 +161,12 @@ class VAE(nn.Module):
 
                 # How many samples to generate? (The difference between the majority and minority samples)
                 no_samples = int(self.sampling_strategy_ * len(train_majority_samples) - len(train_minority_samples))
-                # print('create ', no_samples, 'samples')
-                min_classes = np.ones(no_samples)
+
+                # print('VAE: maj_samples', len(train_majority_samples),
+                #      'min_samples:', len(train_minority_samples),
+                #      ' --create', no_samples, 'samples')
+
+                min_classes = np.full(no_samples, cls)
 
                 # Take random samples from the Gaussian
                 z = q.rsample(sample_shape=torch.Size([no_samples]))
@@ -162,8 +175,8 @@ class VAE(nn.Module):
                 with torch.no_grad():
                     synthetic_samples = self.decode(z).cpu().numpy()
 
-                x_over_train = np.vstack((x, synthetic_samples))
-                y_over_train = np.hstack((y, min_classes))
+                x_over_train = np.vstack((x_over_train, synthetic_samples))
+                y_over_train = np.hstack((y_over_train, min_classes))
 
         return x_over_train, y_over_train
 
@@ -186,7 +199,10 @@ class VAE(nn.Module):
 
 # Safe-Borderline Variational Autoecoder (SB-VAE)
 class SB_VAE(nn.Module):
-    def __init__(self, dimensionality=2, sampling_strategy=1.0, latent_dimensionality=3, architecture=None, radius=0.1):
+    def __init__(self, torch_state, dimensionality=2, sampling_strategy=1.0, latent_dimensionality=3, architecture=None,
+                 radius=1.0):
+        torch.random.set_rng_state(torch_state)
+
         super(SB_VAE, self).__init__()
 
         self.dimensionality_ = dimensionality
@@ -231,6 +247,7 @@ class SB_VAE(nn.Module):
         self.lin_bn6 = nn.BatchNorm1d(num_features=dimensionality)
 
         self.relu = nn.ReLU()
+        self.state_ = torch_state
 
     # Encode method
     def encode(self, x):
@@ -268,23 +285,20 @@ class SB_VAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         return self.decode(z), mu, logvar
 
-    def determine_training_samples(self, x, y, cls):
-        # tree = KDTree(x, leaf_size=30, metric='euclidean')
-
-        nbrs = NearestNeighbors(n_neighbors=5, algorithm='ball_tree').fit(x)
+    def determine_training_samples_NN(self, x, y, cls):
         all_minority_samples = np.array([x[k] for k in range(x.shape[0]) if y[k] == cls])
+        num_all_minority_samples = all_minority_samples.shape[0]
 
+        nbrs = NearestNeighbors(n_neighbors=5, algorithm='kd_tree').fit(x)
         distances, indices = nbrs.kneighbors(all_minority_samples)
 
         outliers = []
         core_points = []
-        border_points_1 = []
-        border_points_2 = []
-        train_minority_samples = []
+        border_points = []
 
-        for m in range(indices.shape[0]):
+        for m in range(num_all_minority_samples):
             # min_sample = x[m]
-            # print("Checking point", m, ':', min_sample)
+            # print("Checking point", m, " - Neighbors:", indices.shape[1])
             points_with_same_class = 0
 
             for k in range(indices.shape[1]):
@@ -292,14 +306,71 @@ class SB_VAE(nn.Module):
 
                 if y[m] == y[nn_idx]:
                     points_with_same_class = points_with_same_class + 1
-                    #print("point", m, " same class", points_with_same_class)
-                    if points_with_same_class > 2:
-                        #print("\t\tappending point", m)
-                        train_minority_samples.append(x[m])
-                        break
 
-        minority_samples = np.array(train_minority_samples)
-        return minority_samples
+            # if points_with_same_class > 2:
+            #    core_points.append(x[m])
+            # print("point", m, " same class", points_with_same_class)
+            if points_with_same_class == indices.shape[1]:
+                core_points.append(x[m])
+            elif points_with_same_class == 1:
+                outliers.append(x[m])
+            else:
+                border_points.append(x[m])
+
+        minority_samples = []
+        # minority_samples.extend(core_points)
+        if len(minority_samples) < 0.4 * num_all_minority_samples:
+            minority_samples.extend(border_points)
+
+        return np.array(minority_samples)
+
+    def determine_training_samples(self, x, y, cls):
+        all_minority_samples = np.array([x[k] for k in range(x.shape[0]) if y[k] == cls])
+        num_all_minority_samples = all_minority_samples.shape[0]
+
+        tree = KDTree(x, leaf_size=10)
+        indices = tree.query_radius(all_minority_samples, r=self.radius_)
+
+        isolated_points = []
+        outliers = []
+        core_points = []
+        border_points = []
+
+        for m in range(num_all_minority_samples):
+            minority_sample = all_minority_samples[m]
+            neighbors_in_radius = indices[m]
+            num_neighbors = len(neighbors_in_radius)
+            # print("Checking point", m, " pts in radius:", len(pts_in_radius))
+
+            if num_neighbors == 1:
+                isolated_points.append(minority_sample)
+            else:
+                points_with_same_class = 0
+                # For each neighbor of the minority sample
+                for k in range(num_neighbors):
+                    nn_idx = neighbors_in_radius[k]
+
+                    if y[nn_idx] == cls:
+                        points_with_same_class = points_with_same_class + 1
+
+                # print("point", m, " same class", points_with_same_class)
+                if points_with_same_class == num_neighbors:
+                    core_points.append(minority_sample)
+                elif points_with_same_class == 1:
+                    outliers.append(minority_sample)
+                else:
+                    border_points.append(minority_sample)
+
+        # print("Core points:", len(core_points), ", outliers:", len(outliers), ", border_pts:", + len(border_points))
+        minority_samples = []
+        minority_samples.extend(core_points)
+        #if len(minority_samples) < 0.75 * num_all_minority_samples:
+        #    minority_samples.extend(border_points)
+        #if len(minority_samples) < 0.75 * num_all_minority_samples:
+        #    minority_samples.extend(isolated_points)
+
+        minority_samples_array = np.array(minority_samples)
+        return minority_samples_array
 
     # Train the VAE and use it to generate synthetic samples
     def fit_resample(self, x, y):
@@ -316,6 +387,9 @@ class SB_VAE(nn.Module):
 
         majority_class = np.array(samples_per_class).argmax()
         train_majority_samples = np.array([x[k] for k in range(x.shape[0]) if y[k] == majority_class])
+
+        x_over_train = np.copy(x)
+        y_over_train = np.copy(y)
 
         # Train the VAE on the samples of each minority class and synthesize class data
         for cls in range(num_classes):
@@ -350,8 +424,12 @@ class SB_VAE(nn.Module):
 
                 # How many samples to generate? (The difference between the majority and minority samples)
                 no_samples = int(self.sampling_strategy_ * len(train_majority_samples) - len(train_minority_samples))
-                # print('create ', no_samples, 'samples')
-                min_classes = np.ones(no_samples)
+
+                # print('VAE: maj_samples', len(train_majority_samples),
+                #      'min_samples:', len(train_minority_samples),
+                #      ' --create', no_samples, 'samples')
+
+                min_classes = np.full(no_samples, cls)
 
                 # Take random samples from the Gaussian
                 z = q.rsample(sample_shape=torch.Size([no_samples]))
@@ -360,8 +438,8 @@ class SB_VAE(nn.Module):
                 with torch.no_grad():
                     synthetic_samples = self.decode(z).cpu().numpy()
 
-                x_over_train = np.vstack((x, synthetic_samples))
-                y_over_train = np.hstack((y, min_classes))
+                x_over_train = np.vstack((x_over_train, synthetic_samples))
+                y_over_train = np.hstack((y_over_train, min_classes))
 
         return x_over_train, y_over_train
 
@@ -378,5 +456,5 @@ class SB_VAE(nn.Module):
             train_loss += loss.item()
             optimizer.step()
         if epoch % 200 == 0:
-            # print('====> Epoch: {} Average training loss: {:.4f}'.format(epoch, train_loss / len(train_loader.dataset)))
+            # print('====> Epoch: {} Avg training loss: {:.4f}'.format(epoch, train_loss / len(train_loader.dataset)))
             train_losses.append(train_loss / len(train_loader.dataset))

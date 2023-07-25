@@ -45,6 +45,7 @@ class ImbalancedDataset:
             else:
                 self.df_ = self.getDF(path)
 
+            print(self.df_.shape)
             self.x_ = self.df_.iloc[:, dataset[1]].to_numpy()
             self.y_ = self.df_.iloc[:, dataset[2]].to_numpy()
 
@@ -66,20 +67,23 @@ class ImbalancedDataset:
         t0 = time.time()
 
     # Perform text Processing. This includes two steps: i) Text Vectorization and ii) Dimensionality Reduction.
-    def balance(self, balancing_pipeline, results_list, classifier_str, sampler_str):
+    def balance(self, balancing_pipeline, results_list, classifier_str, sampler_str, order):
         cv_results = cross_validate(
             balancing_pipeline, self.x_, self.y_,
-            cv=5, scoring=['accuracy', 'balanced_accuracy', 'precision', 'recall', 'f1'],
-            return_train_score=True, return_estimator=True, n_jobs=8)
+            cv=5, scoring=['accuracy', 'balanced_accuracy', 'roc_auc', 'f1'],
+            return_train_score=True, return_estimator=True, n_jobs=2)
 
         # print(classifier_str, sampler_str, cv_results['test_balanced_accuracy'])
         results_list.append([
-            classifier_str, sampler_str,
+            classifier_str, sampler_str, order,
             cv_results['test_accuracy'].mean(),
+            cv_results['test_accuracy'].std(),
             cv_results['test_balanced_accuracy'].mean(),
-            cv_results['test_precision'].mean(),
-            cv_results['test_recall'].mean(),
-            cv_results['test_f1'].mean()
+            cv_results['test_balanced_accuracy'].std(),
+            cv_results['test_roc_auc'].mean(),
+            cv_results['test_roc_auc'].std(),
+            cv_results['test_f1'].mean(),
+            cv_results['test_f1'].std()
         ])
 
     # Return the dataframe
