@@ -1,6 +1,6 @@
 # Learning from Imbalanced Data
 
-A tutorial in learning from imbalanced data presented at the [https://easyconferences.eu/iisa2023/tutorials/](the Fourteenth International Conference on Information, Intelligence, Systems and Applications (IISA 2023)).
+A tutorial in learning from imbalanced data presented at the (https://easyconferences.eu/iisa2023/tutorials/)[the Fourteenth International Conference on Information, Intelligence, Systems and Applications (IISA 2023)].
 
 This repository contains the tutorial slides and a large number of methods for mitigating the problem of class imbalance.
 
